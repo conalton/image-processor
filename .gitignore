@@ -1,0 +1,13 @@
+.local/
+.idea/
+build/
+.gradle/
+.gradle-container/
+.kotlin/
+frontend/dist/
+node_modules/
+frontend/src/generated/
+.terraform/
+*.tfstate*
+*.tfvars
+!infra/localstack.tfvars

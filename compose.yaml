@@ -1,0 +1,151 @@
+name: image-processor
+
+x-network: &network image-processor
+
+x-tool: &tool
+  user: "${HOST_UID:?run through make, which sets HOST_UID and HOST_GID}:${HOST_GID:?run through make}"
+  working_dir: /workspace
+  volumes:
+    - .:/workspace
+    - tool-cache:/cache
+  depends_on:
+    cache-init:
+      condition: service_completed_successfully
+
+x-localstack-env: &localstack-env
+  HOME: /cache
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_REGION: eu-north-1
+# AWS_PROFILE is not set: the profile `default` is used when ~/.aws has one, the instance role when it does not. With
+# AWS_PROFILE set, a missing profile is an error even on an instance with a role.
+x-aws-env: &aws-env
+  HOME: /cache
+  AWS_CONFIG_FILE: /aws/config
+  AWS_SHARED_CREDENTIALS_FILE: /aws/credentials
+x-aws-volumes: &aws-volumes
+  - .:/workspace
+  - tool-cache:/cache
+  # The short form would create a missing ~/.aws owned by root.
+  - type: bind
+    source: ${HOME}/.aws
+    target: /aws
+    read_only: true
+    bind:
+      create_host_path: false
+
+services:
+  # Named volumes are created owned by root; the tools run as the host user.
+  cache-init:
+    image: eclipse-temurin:${JDK_TAG}
+    user: "0:0"
+    command: timeout 60 chown ${HOST_UID}:${HOST_GID} /cache
+    volumes:
+      - tool-cache:/cache
+
+  jdk:
+    <<: *tool
+    image: eclipse-temurin:${JDK_TAG}
+    environment:
+      HOME: /cache
+      GRADLE_USER_HOME: /cache/gradle
+      DYNAMODB_ENDPOINT: http://dynamodb:8000
+
+  node:
+    <<: *tool
+    image: node:${NODE_TAG}
+    environment:
+      HOME: /cache
+      npm_config_cache: /cache/npm
+
+  # One workspace per service: the selected workspace is a file in infra/.terraform that a parallel target could switch.
+  terraform:
+    <<: *tool
+    image: hashicorp/terraform:${TERRAFORM_TAG}
+    working_dir: /workspace/infra
+    environment:
+      <<: *localstack-env
+      TF_VAR_lambda_runtime: ${LAMBDA_RUNTIME:?set LAMBDA_RUNTIME in versions.env}
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      TF_WORKSPACE: localstack
+
+  terraform-aws:
+    <<: *tool
+    image: hashicorp/terraform:${TERRAFORM_TAG}
+    working_dir: /workspace/infra
+    volumes: *aws-volumes
+    environment:
+      <<: *aws-env
+      TF_VAR_lambda_runtime: ${LAMBDA_RUNTIME:?set LAMBDA_RUNTIME in versions.env}
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      TF_WORKSPACE: aws
+
+  aws-cli:
+    <<: *tool
+    image: amazon/aws-cli:${AWS_CLI_TAG}
+    environment:
+      <<: *localstack-env
+      AWS_ENDPOINT_URL: http://localstack:4566
+
+  aws-cli-aws:
+    <<: *tool
+    image: amazon/aws-cli:${AWS_CLI_TAG}
+    volumes: *aws-volumes
+    environment: *aws-env
+
+  localstack:
+    image: localstack/localstack:${LOCALSTACK_TAG}
+    networks:
+      default:
+        aliases:
+          # The AWS provider reads bucket tags through S3 Control, also with tag_resources = false, at the endpoint host
+          # with the account id in front (observed with provider 6.69.1).
+          - 000000000000.localstack
+    ports:
+      - "127.0.0.1:4566:4566"
+    environment:
+      LOCALSTACK_AUTH_TOKEN:
+      LAMBDA_DOCKER_NETWORK: *network
+      # Without it LocalStack pulls the runtime's floating default tag.
+      LAMBDA_RUNTIME_IMAGE_MAPPING: '{"${LAMBDA_RUNTIME}": "public.ecr.aws/lambda/java:${LAMBDA_JAVA_TAG}"}'
+      # LocalStack answers 403 to a request from an origin it does not list. The page origin (page_url without
+      # /index.html) is a copy: LocalStack starts before Terraform builds it.
+      EXTRA_CORS_ALLOWED_ORIGINS: http://image-processor-000000000000-eu-north-1-web.s3.localhost:4566
+      # LocalStack skips presigned URL signatures by default; with 0 it refuses a changed signed header
+      # (Content-Length, Content-Type, Content-Disposition) like S3.
+      S3_SKIP_SIGNATURE_VALIDATION: "0"
+      # Function and queue URLs use this host; Chromium and Firefox resolve *.localhost to loopback themselves.
+      LOCALSTACK_HOST: localhost:4566
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The image declares VOLUME /var/lib/localstack (a cache only): without a mount, `down` leaves an anonymous volume.
+    tmpfs:
+      - /var/lib/localstack
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:4566/_localstack/health', timeout=4)"
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  dynamodb:
+    image: amazon/dynamodb-local:${DYNAMODB_LOCAL_TAG}
+    command: -jar DynamoDBLocal.jar -inMemory -sharedDb
+    healthcheck:
+      # Any HTTP answer is enough; curl without -f fails only when nothing listens.
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "http://localhost:8000"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+networks:
+  default:
+    name: *network
+
+volumes:
+  tool-cache:

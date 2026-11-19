@@ -1,0 +1,37 @@
+[versions]
+kotlin = "2.4.21"
+lambda-core = "1.4.1"
+lambda-events = "3.16.1"
+aws-sdk = "2.56.0"
+slf4j = "2.0.20"
+kotlinx-serialization = "1.12.0"
+openapi-request-validator = "3.0.0"
+swagger-parser = "2.1.41"
+swagger-core = "2.2.48"
+metadata-extractor = "2.22.0"
+fabrikt = "28.1.1"
+hibernate-validator = "9.1.6.Final"
+ktlint = "1.8.0"
+spotless = "8.10.4"
+
+[libraries]
+lambda-core = { module = "com.amazonaws:aws-lambda-java-core", version.ref = "lambda-core" }
+lambda-events = { module = "com.amazonaws:aws-lambda-java-events", version.ref = "lambda-events" }
+aws-sdk-bom = { module = "software.amazon.awssdk:bom", version.ref = "aws-sdk" }
+aws-sdk-s3 = { module = "software.amazon.awssdk:s3" }
+aws-sdk-dynamodb = { module = "software.amazon.awssdk:dynamodb" }
+aws-sdk-url-connection-client = { module = "software.amazon.awssdk:url-connection-client" }
+slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4j" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+openapi-request-validator = { module = "com.atlassian.oai:openapi-request-validator-core", version.ref = "openapi-request-validator" }
+swagger-parser = { module = "io.swagger.parser.v3:swagger-parser", version.ref = "swagger-parser" }
+swagger-core = { module = "io.swagger.core.v3:swagger-core", version.ref = "swagger-core" }
+metadata-extractor = { module = "com.drewnoakes:metadata-extractor", version.ref = "metadata-extractor" }
+fabrikt = { module = "io.fabrikt:fabrikt", version.ref = "fabrikt" }
+hibernate-validator = { module = "org.hibernate.validator:hibernate-validator", version.ref = "hibernate-validator" }
+kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test-junit5", version.ref = "kotlin" }
+kotlin-gradle-plugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
+kotlin-serialization-gradle-plugin = { module = "org.jetbrains.kotlin:kotlin-serialization", version.ref = "kotlin" }
+
+[plugins]
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }

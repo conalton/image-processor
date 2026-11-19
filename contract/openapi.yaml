@@ -1,0 +1,413 @@
+openapi: 3.1.0
+info:
+  title: Image processor API
+  version: 0.1.0
+  description: >
+    The browser creates a task, uploads the image straight to S3 with the returned instructions, then polls the task
+    until it is DONE, INPUT_REJECTED or FAILED.
+
+
+    Any other path answers 404 with the error code NOT_FOUND, and a known path with another method answers 405 with
+    METHOD_NOT_ALLOWED. Both use the ApiError body and are not repeated on every path below. The 405 carries an Allow
+    header.
+
+
+    The Lambda Function URL in front of the API answers some requests itself: a CORS preflight, 429 when the function
+    is throttled, and 502 when the function crashes or times out. Those bodies are not ApiError, and a client treats
+    429 and 502 as transient.
+# A copy of MAX_UPLOAD_BYTES in the Kotlin module shared, which owns the limit; ErrorContractTest compares the two.
+x-max-upload-bytes: &maxUploadBytes 20971520
+paths:
+  /api/tasks:
+    post:
+      operationId: createTask
+      summary: Create a task and get the instructions for uploading the original
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+            example:
+              fileName: holiday.jpg
+              contentType: image/jpeg
+              size: 3145728
+      responses:
+        '201':
+          description: Task created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateTaskResponse'
+              example:
+                id: 0b8f2c5e-6c1a-4d0e-9a3b-7a1c2d3e4f50
+                upload:
+                  method: PUT
+                  url: https://bucket.s3.amazonaws.com/originals/0b8f2c5e-6c1a-4d0e-9a3b-7a1c2d3e4f50?X-Amz-Signature=abc
+                  headers:
+                    content-type: image/jpeg
+                    content-length: '3145728'
+                    if-none-match: '*'
+                    content-disposition: inline
+                    cache-control: private
+        '400':
+          description: The request is not valid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                invalidRequest:
+                  value:
+                    code: INVALID_REQUEST
+                    message: The request body is not valid.
+                unsupportedContentType:
+                  value:
+                    code: UNSUPPORTED_CONTENT_TYPE
+                    message: Only image/jpeg and image/png are accepted.
+                fileTooLarge:
+                  value:
+                    code: FILE_TOO_LARGE
+                    message: The file is larger than the allowed size.
+                    maxUploadBytes: *maxUploadBytes
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/tasks/{id}:
+    get:
+      operationId: getTask
+      summary: Read the status of a task, with links to the files once available
+      parameters:
+        - name: id
+          in: path
+          required: true
+          example: 0b8f2c5e-6c1a-4d0e-9a3b-7a1c2d3e4f50
+          schema:
+            $ref: '#/components/schemas/TaskId'
+      responses:
+        '200':
+          description: The task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+              examples:
+                pendingUpload:
+                  value:
+                    id: 0b8f2c5e-6c1a-4d0e-9a3b-7a1c2d3e4f50
+                    status: PENDING_UPLOAD
+                    createdAt: '2026-10-20T12:00:00Z'
+                processing:
+                  value:
+                    id: 0b8f2c5e-6c1a-4d0e-9a3b-7a1c2d3e4f50
+                    status: PROCESSING
+                done:
+                  value:
+                    id: 0b8f2c5e-6c1a-4d0e-9a3b-7a1c2d3e4f50
+                    status: DONE
+                    original:
+                      contentType: image/jpeg
+                      size: 3145728
+                      viewUrl: https://bucket.s3.amazonaws.com/originals/0b8f2c5e-6c1a-4d0e-9a3b-7a1c2d3e4f50?sig=1
+                      downloadUrl: https://bucket.s3.amazonaws.com/originals/0b8f2c5e-6c1a-4d0e-9a3b-7a1c2d3e4f50?sig=2
+                    variants:
+                      - name: thumbnail
+                        label: Thumbnail
+                        contentType: image/jpeg
+                        width: 200
+                        height: 150
+                        size: 8192
+                        viewUrl: https://bucket.s3.amazonaws.com/derived/0b8f2c5e-6c1a-4d0e-9a3b-7a1c2d3e4f50/thumbnail.jpg?sig=3
+                        downloadUrl: https://bucket.s3.amazonaws.com/derived/0b8f2c5e-6c1a-4d0e-9a3b-7a1c2d3e4f50/thumbnail.jpg?sig=4
+                inputRejected:
+                  value:
+                    id: 0b8f2c5e-6c1a-4d0e-9a3b-7a1c2d3e4f50
+                    status: INPUT_REJECTED
+                    error:
+                      code: UNDECODABLE_IMAGE
+                failed:
+                  value:
+                    id: 0b8f2c5e-6c1a-4d0e-9a3b-7a1c2d3e4f50
+                    status: FAILED
+                    error:
+                      code: PROCESSING_ERROR
+        '400':
+          description: The identifier is not valid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                code: INVALID_REQUEST
+                message: The identifier is not valid.
+        '404':
+          description: No such task, or it has expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                code: TASK_NOT_FOUND
+                message: The task does not exist.
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  responses:
+    InternalError:
+      description: The request failed on the server.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            code: INTERNAL_ERROR
+            message: The request failed.
+  schemas:
+    ContentType:
+      type: string
+      enum: [image/jpeg, image/png]
+    ErrorCode:
+      type: string
+      enum:
+        - INVALID_REQUEST
+        - UNSUPPORTED_CONTENT_TYPE
+        - FILE_TOO_LARGE
+        - TASK_NOT_FOUND
+        - NOT_FOUND
+        - METHOD_NOT_ALLOWED
+        - INTERNAL_ERROR
+    InputRejectionCode:
+      type: string
+      enum:
+        - FILE_TOO_LARGE
+        - PIXEL_LIMIT_EXCEEDED
+        - CONTENT_TYPE_MISMATCH
+        - UNDECODABLE_IMAGE
+    FailureCode:
+      type: string
+      enum:
+        - PROCESSING_ERROR
+        - ORIGINAL_MISSING
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: Text for developers and logs. The page shows its own text for each code.
+        maxUploadBytes:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: *maxUploadBytes
+          description: The size limit of an upload in bytes. Present with FILE_TOO_LARGE, absent with every other code.
+    CreateTaskRequest:
+      type: object
+      required: [fileName, contentType, size]
+      properties:
+        fileName:
+          type: string
+          # Invalid UTF-8 in a body arrives as U+FFFD, so a genuine U+FFFD is refused as well. The length is in the
+          # pattern, not in minLength and maxLength, because the generated validators count those in UTF-16 code units.
+          pattern: '^[^\p{Cc}\p{Cs}\uFFFD]{1,255}$'
+          description: >
+            The name of the user's file, used only for download names. Its stem is the name up to its last '.'
+            ('image' when that is empty): the original downloads as {stem}.{ext} and each version as
+            {stem}-{version}.{ext}, where {ext} comes from the contentType (jpg or png), never from the name. The
+            download link carries the name as UTF-8 (RFC 6266 filename*) and, for old clients, as an ASCII name in
+            which characters other than ASCII letters, digits, '.', '-' and '_' are replaced by '_'. The length in the
+            pattern counts Unicode code points. The pattern refuses control characters (Cc: C0 including NUL, tab, CR
+            and LF, DEL and C1), unpaired surrogates (Cs) and the replacement character U+FFFD.
+        contentType:
+          type: string
+          description: >
+            The MIME type of the file. The API converts it to lower case before comparing it with ContentType.
+            A value that is not one of ContentType, including an empty one, answers 400 UNSUPPORTED_CONTENT_TYPE, not
+            INVALID_REQUEST. The stored contentType and the signed upload Content-Type are the lower-case value.
+        size:
+          type: integer
+          format: int64
+          minimum: 1
+          description: >
+            Size of the file in bytes. A size above the upload limit answers 400 FILE_TOO_LARGE with the limit in
+            maxUploadBytes, so this schema has no maximum. The API also reads a quoted or zero-padded whole number
+            ("2048", 007); a fraction, an exponent or a value outside the int64 range answers 400 INVALID_REQUEST.
+    UploadInstructions:
+      type: object
+      required: [method, url, headers]
+      properties:
+        method:
+          type: string
+          enum: [PUT]
+        url:
+          type: string
+          format: uri
+          description: >
+            A presigned S3 URL, valid for a limited time after the task was created; no operation signs a new one. S3
+            answers the PUT itself, not with ApiError: 200 stored, 412 the original of this task is already stored (an
+            earlier PUT got through), 403 the signature has expired or a signed header differs.
+        headers:
+          type: object
+          description: >
+            The headers the upload signature covers; send each with the PUT and with the value given. A browser does
+            not let a page set content-length and derives it from the body, which has the declared size.
+          additionalProperties:
+            type: string
+    CreateTaskResponse:
+      type: object
+      required: [id, upload]
+      properties:
+        id:
+          $ref: '#/components/schemas/TaskId'
+        upload:
+          $ref: '#/components/schemas/UploadInstructions'
+    TaskId:
+      type: string
+      format: uuid
+    FileInfo:
+      description: >
+        The original file, with its size in bytes. viewUrl and downloadUrl are presigned S3 GET URLs, valid for a
+        limited time from this response; read the task again for fresh ones. downloadUrl makes S3 send the file as an
+        attachment under its download name.
+      type: object
+      required: [contentType, size, viewUrl, downloadUrl]
+      properties:
+        contentType:
+          $ref: '#/components/schemas/ContentType'
+        size:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: *maxUploadBytes
+        viewUrl:
+          type: string
+          format: uri
+        downloadUrl:
+          type: string
+          format: uri
+    Variant:
+      description: >
+        A version made by the worker, with its size in bytes and its width and height in pixels; the links behave as
+        in FileInfo.
+      type: object
+      required: [name, label, contentType, width, height, size, viewUrl, downloadUrl]
+      properties:
+        name:
+          type: string
+          description: >
+            Identifier of the version, unique within a task. The set is the worker's catalogue and can grow; do not
+            treat it as closed.
+        label:
+          type: string
+          description: English display name of the version, from the same catalogue.
+        contentType:
+          $ref: '#/components/schemas/ContentType'
+        width:
+          type: integer
+          format: int32
+          minimum: 1
+        height:
+          type: integer
+          format: int32
+          minimum: 1
+        size:
+          type: integer
+          format: int64
+          minimum: 1
+        viewUrl:
+          type: string
+          format: uri
+        downloadUrl:
+          type: string
+          format: uri
+    Task:
+      description: One schema per status, each with its own required fields; an error code belongs to one status.
+      oneOf:
+        - $ref: '#/components/schemas/PendingTask'
+        - $ref: '#/components/schemas/ProcessingTask'
+        - $ref: '#/components/schemas/DoneTask'
+        - $ref: '#/components/schemas/InputRejectedTask'
+        - $ref: '#/components/schemas/FailedTask'
+      discriminator:
+        propertyName: status
+        mapping:
+          PENDING_UPLOAD: '#/components/schemas/PendingTask'
+          PROCESSING: '#/components/schemas/ProcessingTask'
+          DONE: '#/components/schemas/DoneTask'
+          INPUT_REJECTED: '#/components/schemas/InputRejectedTask'
+          FAILED: '#/components/schemas/FailedTask'
+    PendingTask:
+      type: object
+      required: [id, status, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/TaskId'
+        status:
+          type: string
+          const: PENDING_UPLOAD
+        createdAt:
+          type: string
+          format: date-time
+          description: >
+            When the task was created. PENDING_UPLOAD only says that processing has not been recorded: the file may
+            already be stored and wait for the worker or its retries. The age of the task is a hint, not proof, that the
+            upload is missing.
+    ProcessingTask:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          $ref: '#/components/schemas/TaskId'
+        status:
+          type: string
+          const: PROCESSING
+    DoneTask:
+      type: object
+      required: [id, status, original, variants]
+      properties:
+        id:
+          $ref: '#/components/schemas/TaskId'
+        status:
+          type: string
+          const: DONE
+        original:
+          $ref: '#/components/schemas/FileInfo'
+        variants:
+          type: array
+          items:
+            $ref: '#/components/schemas/Variant'
+    InputRejectedTask:
+      type: object
+      required: [id, status, error]
+      properties:
+        id:
+          $ref: '#/components/schemas/TaskId'
+        status:
+          type: string
+          const: INPUT_REJECTED
+        error:
+          $ref: '#/components/schemas/InputRejection'
+    FailedTask:
+      type: object
+      required: [id, status, error]
+      properties:
+        id:
+          $ref: '#/components/schemas/TaskId'
+        status:
+          type: string
+          const: FAILED
+        error:
+          $ref: '#/components/schemas/Failure'
+    InputRejection:
+      type: object
+      required: [code]
+      properties:
+        code:
+          $ref: '#/components/schemas/InputRejectionCode'
+    Failure:
+      type: object
+      required: [code]
+      properties:
+        code:
+          $ref: '#/components/schemas/FailureCode'
